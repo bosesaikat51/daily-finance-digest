@@ -1,0 +1,20 @@
+[project]
+name = "daily-finance-digest"
+version = "0.1.0"
+description = "Daily financial news digest emailed via GitHub Actions cron"
+readme = "README.md"
+authors = [
+    { name = "bosesaikat51", email = "bosesaikat51@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.2.2",
+    "requests>=2.33.1",
+]
+
+[project.scripts]
+daily-finance-digest = "daily_finance_digest:main"
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12.0"]
+build-backend = "uv_build"
