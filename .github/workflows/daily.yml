@@ -1,0 +1,41 @@
+name: Daily Finance Digest
+
+# When should this workflow run?
+on:
+  # Scheduled run — cron is ALWAYS in UTC on GitHub Actions.
+  # "0 7 * * 1-5" means: at 07:00 UTC, every Mon–Fri.
+  #  ┬ ┬ ┬ ┬ ┬
+  #  │ │ │ │ └── day of week (1–5 = Mon–Fri; 0 or 7 = Sun)
+  #  │ │ │ └──── month (1–12; * = every)
+  #  │ │ └────── day of month (1–31; * = every)
+  #  │ └──────── hour (0–23 UTC)
+  #  └────────── minute (0–59)
+  schedule:
+    - cron: "0 7 * * 1-5"
+
+  # Also allow manual runs from the GitHub UI (Actions tab -> Run workflow).
+  # Handy for testing without waiting for the cron.
+  workflow_dispatch:
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest  # free Linux VM provided by GitHub
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.6"
+
+      - name: Install project dependencies
+        run: uv sync --frozen  # installs exactly what's in uv.lock
+
+      - name: Send digest email
+        env:
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: uv run python -m daily_finance_digest
