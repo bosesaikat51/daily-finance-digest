@@ -8,10 +8,12 @@ import smtplib
 import sys
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from typing import Literal
 
 import anthropic
 import requests
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 NEWS_API_URL = "https://newsapi.org/v2/top-headlines"
 SMTP_HOST = "smtp.gmail.com"
@@ -42,11 +44,31 @@ def fetch_headlines(api_key: str, limit: int = 10) -> list[dict]:
     return data["articles"]
 
 
-def summarize_headlines(articles: list[dict], api_key: str) -> list[str]:
-    """Ask Claude for 3 bullets describing today's key themes.
+class TermOfTheDay(BaseModel):
+    term: str
+    plain_english: str
+    why_today: str
 
-    Returns an empty list on any failure — the caller falls back to the
-    plain digest so a Claude outage never blocks the email.
+
+class MarketInsight(BaseModel):
+    area: str
+    direction: Literal["positive", "negative", "mixed", "uncertain"]
+    reasoning: str
+
+
+class DigestContent(BaseModel):
+    themes: list[str]
+    insights: list[MarketInsight]
+    term: TermOfTheDay
+
+
+def generate_digest_content(
+    articles: list[dict], api_key: str
+) -> DigestContent | None:
+    """Ask Claude for today's themes and a 'term of the day'.
+
+    Returns None on any failure — the caller falls back to the plain
+    digest so a Claude outage never blocks the email.
     """
     headlines = "\n".join(
         f"- {a.get('title') or ''} ({(a.get('source') or {}).get('name') or ''}): "
@@ -54,35 +76,54 @@ def summarize_headlines(articles: list[dict], api_key: str) -> list[str]:
         for a in articles
     )
     system = (
-        "You are a financial news editor writing a concise daily brief. "
-        "Given a list of business headlines, identify the 3 most important "
-        "themes or stories. Output exactly 3 bullet points, one per line, "
-        "each starting with '- '. Each bullet is a single plain-text "
-        "sentence — no markdown, no headline quoting, no preamble."
+        "You are a financial news editor writing a concise daily brief "
+        "for a curious learner building financial literacy. Given today's "
+        "business headlines, produce:\n"
+        "1. Exactly 3 themes — the most important stories or patterns of "
+        "the day, each as one plain-text sentence.\n"
+        "2. Two or three market insights — concrete possible effects "
+        "on sectors, asset classes, or regions. Each insight has:\n"
+        "   - 'area': a specific market area (e.g. 'US tech stocks', "
+        "'European banks', '10-year Treasuries', 'gold', 'energy ETFs'). "
+        "Stay at sector/asset-class level; never name individual stocks "
+        "unless a headline features one prominently.\n"
+        "   - 'direction': one of 'positive', 'negative', 'mixed', or "
+        "'uncertain'.\n"
+        "   - 'reasoning': one sentence explaining the logic with hedged "
+        "language ('could', 'may', 'historically', 'all else equal'). "
+        "This is educational observation, not investment advice.\n"
+        "   If today's news lacks clear market implications, produce "
+        "fewer insights (even just one) rather than invent them.\n"
+        "3. One 'term of the day' — a moderately-technical financial or "
+        "economics term that appears in or is directly relevant to "
+        "today's news. Avoid extremely basic terms (stock, bond, "
+        "dividend, IPO) and extremely obscure ones. Good examples: "
+        "'yield curve inversion', 'quantitative tightening', "
+        "'basis points', 'duration risk', 'carry trade'. For the term, "
+        "provide a plain-English definition (2 sentences, no jargon) "
+        "and one sentence on how it's relevant today."
     )
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        response = client.messages.parse(
             model=SUMMARY_MODEL,
-            max_tokens=500,
+            max_tokens=1500,
             system=system,
-            messages=[{"role": "user", "content": f"Today's headlines:\n{headlines}"}],
+            messages=[
+                {"role": "user", "content": f"Today's headlines:\n{headlines}"}
+            ],
+            output_format=DigestContent,
         )
-        text = next((b.text for b in response.content if b.type == "text"), "")
-        return [
-            line.lstrip("-• ").strip()
-            for line in text.splitlines()
-            if line.strip().startswith(("-", "•"))
-        ]
+        return response.parsed_output
     except Exception as e:
-        print(f"Summary generation failed: {e}", file=sys.stderr)
-        return []
+        print(f"AI content generation failed: {e}", file=sys.stderr)
+        return None
 
 
-def format_summary_html(bullets: list[str]) -> str:
-    if not bullets:
+def format_themes_html(themes: list[str]) -> str:
+    if not themes:
         return ""
-    items = "".join(f"<li>{html.escape(b)}</li>" for b in bullets)
+    items = "".join(f"<li>{html.escape(t)}</li>" for t in themes)
     return (
         '<div style="background:#f6f8fa;padding:12px 16px;border-radius:6px;'
         'margin-bottom:16px;">'
@@ -91,7 +132,58 @@ def format_summary_html(bullets: list[str]) -> str:
     )
 
 
-def format_html(articles: list[dict], summary_html: str = "") -> str:
+def format_insights_html(insights: list[MarketInsight]) -> str:
+    if not insights:
+        return ""
+    colors = {
+        "positive": "#2e7d32",
+        "negative": "#c62828",
+        "mixed": "#6a1b9a",
+        "uncertain": "#616161",
+    }
+    rows = []
+    for i in insights:
+        color = colors.get(i.direction, "#616161")
+        rows.append(
+            f'<li style="margin-bottom:10px;border-left:3px solid {color};'
+            f'padding:2px 0 2px 10px;list-style:none;">'
+            f"<b>{html.escape(i.area)}</b> "
+            f'<span style="color:{color};text-transform:uppercase;'
+            f'font-size:0.75em;font-weight:700;margin-left:4px;">'
+            f"{i.direction}</span><br>"
+            f'<span style="color:#333;">{html.escape(i.reasoning)}</span>'
+            f"</li>"
+        )
+    return (
+        '<div style="background:#eef3ff;padding:12px 16px;border-radius:6px;'
+        'margin-top:16px;">'
+        '<h3 style="margin:0 0 10px 0;">Potential market impact</h3>'
+        f'<ul style="margin:0;padding:0;">{"".join(rows)}</ul>'
+        '<p style="margin:8px 0 0 0;color:#666;"><small>'
+        "Educational observations, not investment advice.</small></p>"
+        "</div>"
+    )
+
+
+def format_term_html(term: TermOfTheDay) -> str:
+    return (
+        '<div style="background:#fff8e1;border-left:4px solid #f9a825;'
+        'padding:12px 16px;margin-top:20px;border-radius:4px;">'
+        '<h3 style="margin:0 0 6px 0;">'
+        f"Term of the day: {html.escape(term.term)}</h3>"
+        f'<p style="margin:0 0 8px 0;">{html.escape(term.plain_english)}</p>'
+        '<p style="margin:0;color:#555;"><small><i>Why today:</i> '
+        f"{html.escape(term.why_today)}</small></p>"
+        "</div>"
+    )
+
+
+def format_html(
+    articles: list[dict],
+    themes_html: str = "",
+    insights_html: str = "",
+    term_html: str = "",
+) -> str:
     """Render headlines as a simple HTML email body."""
     today = datetime.now(timezone.utc).strftime("%A, %d %B %Y")
     items = []
@@ -109,8 +201,10 @@ def format_html(articles: list[dict], summary_html: str = "") -> str:
     return (
         f"<html><body>"
         f"<h2>Daily Finance Digest — {today}</h2>"
-        f"{summary_html}"
+        f"{themes_html}"
         f"<ol>{''.join(items)}</ol>"
+        f"{insights_html}"
+        f"{term_html}"
         f"<hr><small>Automated by GitHub Actions.</small>"
         f"</body></html>"
     )
@@ -149,15 +243,23 @@ def main() -> int:
         print("No articles returned.", file=sys.stderr)
         return 1
 
-    summary_html = ""
+    themes_html = ""
+    insights_html = ""
+    term_html = ""
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
     if anthropic_key:
-        bullets = summarize_headlines(articles, anthropic_key)
-        summary_html = format_summary_html(bullets)
-        if bullets:
-            print(f"Generated summary with {len(bullets)} bullets.")
+        digest = generate_digest_content(articles, anthropic_key)
+        if digest:
+            themes_html = format_themes_html(digest.themes)
+            insights_html = format_insights_html(digest.insights)
+            term_html = format_term_html(digest.term)
+            print(
+                f"AI content: {len(digest.themes)} themes + "
+                f"{len(digest.insights)} insights + "
+                f"term '{digest.term.term}'."
+            )
 
-    body_html = format_html(articles, summary_html)
+    body_html = format_html(articles, themes_html, insights_html, term_html)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     send_email(
         sender=sender,
