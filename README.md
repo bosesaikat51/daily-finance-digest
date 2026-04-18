@@ -28,3 +28,4 @@ Set these as GitHub repo secrets (Settings -> Secrets and variables -> Actions):
 | `GMAIL_USER` | Your Gmail address |
 | `GMAIL_APP_PASSWORD` | 16-char Gmail App Password (not your login password!) |
 | `RECIPIENT_EMAIL` | Where to send the digest |
+| `ANTHROPIC_API_KEY` | *(optional)* Claude API key. If set, the email is prefixed with a 3-bullet AI summary of today's themes. |
